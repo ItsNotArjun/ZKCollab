@@ -1,0 +1,7 @@
+# Rust
+/target
+**/*.rlib
+
+# OS files
+.DS_Store
+
