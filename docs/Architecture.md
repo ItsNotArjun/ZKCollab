@@ -1,12 +1,11 @@
-# Orchestration Flow: Training, Proving, Verification, and Aggregation
+# Orchestration Flow: Training, Folding, Verification, and Aggregation
 
-This document explains how training, proof generation, verification, and aggregation
-are orchestrated in a secure cross-silo federated learning system.
+This document explains how training, **parallel proof folding**, verification, and aggregation are orchestrated in a secure cross-silo federated learning system.
 
 The system combines:
-- **Off-chain computation** for efficiency (training and proof generation)
-- **Zero-knowledge proofs** for correctness guarantees
-- **Blockchain smart contracts** for binding, coordination, and enforcement
+- **Off-chain computation** for efficiency (training and instance generation)
+- **Zero-knowledge Folding Schemes (Mira)** for scalable aggregation
+- **Blockchain smart contracts** for binding, coordination, and final enforcement
 
 ---
 
@@ -14,20 +13,21 @@ The system combines:
 
 ### 1. Client (Data Silo)
 - Holds private local dataset $D$
-- Performs local training
-- Generates zero-knowledge proofs
+- Performs local training ($W \to W'$)
+- **Generates an Accumulator Instance $(U, W)$**: A lightweight cryptographic claim of correctness (not a full SNARK).
 
 ### 2. Aggregator
-- Coordinates aggregation of client updates
-- Generates a proof of correct aggregation
+- **Orchestrator of Folding**: Receives instances from all clients and folds them into a single "Root Instance" using a binary tree structure.
+- **Homomorphic Aggregator**: Sums the commitments of all client weights to compute the verifiable global average.
+- **Final Prover**: Generates the *single* final succinct proof for the entire batch.
 
-### 3. Verifier
-- Verifies zero-knowledge proofs
-- On Chain
+### 3. Verifier (Smart Contract)
+- **The Final Judge**: Verifies the one final proof submitted by the Aggregator.
+- **Consistency Checker**: Verifies that the global model is mathematically consistent with the sum of the client commitments (Homomorphic Check).
 
 ### 4. Blockchain (Smart Contracts)
 - Provides global coordination and public randomness
-- Stores commitments and verification outcomes
+- Stores commitments ($C_D, C_{\Delta W}$) to prevent equivocation
 - Enforces incentives and penalties
 
 ---
@@ -35,11 +35,10 @@ The system combines:
 ## High-Level Design Principle
 
 - **Training happens off-chain**
-- **Proof generation happens off-chain**
-- **Binding and verification are anchored on-chain**
-- **Aggregation is verifiable and enforced on-chain**
-
-This separation ensures scalability without sacrificing security.
+- **Client Proofs are "Deferred"**: Clients generate lightweight instances, not heavy proofs.
+- **Aggregation is "Folding"**: The Aggregator compresses $N$ instances into 1.
+- **Binding is anchored on-chain**: Clients commit to their outputs *before* the aggregator reveals the result.
+- **Verification is O(1)**: The chain verifies only ONE proof regardless of the number of clients.
 
 ---
 
@@ -54,61 +53,41 @@ A smart contract initializes a federated learning round by publishing:
 - Public randomness (seed) $\text{seed}$
 - Participation rules (deadlines, stake, rewards)
 
-The public randomness is used to deterministically select training batches.
-
 ---
 
 ### Step 1 — Local Training (Off-Chain)
 
-- input binding step --- see what input binding is in step 2.
-
 Each client performs standard local training using its private dataset $D$.
 
 Training consists of $K$ local steps:
-
 $$
 W_0 \;\longrightarrow\; W_1 \;\longrightarrow\; \dots \;\longrightarrow\; W_K
 $$
 
 The client computes its model update:
-
 $$
 \Delta W = W_K - W_0
 $$
-
-This training is fast and uses conventional ML frameworks (e.g. PyTorch, GPUs),
-but is not trusted by itself.
 
 ---
 
 ### Step 2 — Input and Output Binding (On-Chain)
 
-Before generating a proof, the client binds its inputs and outputs using a smart contract.
+Before submitting the result to the aggregator, the client binds its inputs and outputs using a smart contract to prevent "changing their mind" later.
 
-- Input binding happens before training
-- Output binding happens after training
-
-
-
-#### Dataset Commitment
-
+#### Dataset Commitment (Input)
 The client commits to its full local dataset:
-
 $$
 C_D = \mathrm{Commit}(D)
 $$
 
-This prevents the client from changing or cherry-picking data later.
-
-#### Update Commitment
-
-After training, the client commits to its update:
-
+#### Update Commitment (Output)
+The client calculates the cryptographic commitment to their new weights. **Crucially, this value is embedded in their ZK Instance.**
 $$
 C_{\Delta W} = \mathrm{Commit}(\Delta W)
 $$
 
-Once submitted on-chain, these commitments are immutable.
+The client posts $C_{\Delta W}$ (or a hash of their Instance) to the chain. Once submitted, they cannot change their update.
 
 ---
 
@@ -120,104 +99,89 @@ $$
 B_t = \mathrm{PRF}(\text{seed}, \text{round\_id}, \text{client\_id}, t)
 $$
 
-This ensures:
-- No adaptive or adversarial batch selection
-- Verifiable batch usage inside the proof
+This ensures verifiable batch usage inside the proof without revealing the data itself.
 
 ---
 
-### Step 4 — Proof of Training Generation (Off-Chain)
+### Step 4 — Accumulator Instance Generation (Off-Chain)
 
-The client generates a zero-knowledge Proof of Training (PoT).
+*Replaced "Proof of Training" with "Instance Generation"*
 
-The proof attests that:
+Instead of generating a heavy SNARK, the client generates a **Mira Accumulator Instance** $(U)$.
 
+This Instance asserts that:
 $$
-(W_t, B_t) \;\longrightarrow\; W_{t+1}
-$$
-
-for each step, with intended semantics:
-
-$$
-W_{t+1} = W_t - \eta \cdot \nabla \mathcal{L}(W_t; B_t)
+\exists \; \text{Execution Trace} \;\; \text{s.t.} \;\; W_{new} = \text{Train}(W_{old}, D, B_t)
 $$
 
-Using recursion, multiple steps are compressed into a single proof asserting:
-
-$$
-W_0 \;\longrightarrow\; W_K
-$$
-
-Formally, the proof establishes:
-
-$$
-\exists \; W_1, \dots, W_{K-1}
-\;\; \text{s.t.} \;\;
-W_{i+1} = \mathrm{Step}(W_i, B_i)
-\quad \forall i \in [0, K-1]
-$$
-
-subject to:
-- Dataset commitment $C_D$
-- Training policy commitment
-- Batch selection derived from $\text{seed}$
-- Output commitment $C_{\Delta W}$
+Properties of this Instance:
+- **Lightweight:** Generation is fast compared to a full SNARK.
+- **Contains Commitment:** The instance $U$ public inputs include $C_{\Delta W}$.
+- **Foldable:** It is mathematically compatible with other clients' instances.
 
 ---
 
-### Step 5 — Proof Submission and Verification (On-Chain)
+### Step 5 — Submission to Aggregator (Off-Chain)
 
-The client submits to the smart contract:
+The client sends the following packet to the Aggregator:
+1.  The Model Update $\Delta W$
+2.  The Accumulator Instance $U$
 
-- Proof of Training (or its hash)
-- References to $C_D$ and $C_{\Delta W}$
-
-Verification can be done in two ways:
-- **Off-chain verification** with on-chain attestation (recommended)
-- **On-chain verification** using a verifier contract (expensive)
-
-Only proofs that verify successfully are accepted.
+*Note: The Smart Contract does NOT verify proofs here. It simply records that the Client has committed to a specific result in Step 2.*
 
 ---
 
 ## Aggregation Phase
 
-### Step 6 — Aggregation of Client Updates (Off-Chain)
+### Step 6 — Parallel Folding & Homomorphic Averaging (Off-Chain)
 
-The aggregator collects all valid client updates $\Delta W_i$
-whose commitments and proofs were accepted on-chain.
+The Aggregator performs two parallel operations on the received packets:
 
-The global update is computed as:
-
+#### Path A: Validity Folding (The Tree)
+The Aggregator verifies the instances "optimistically" and folds them using a Binary Tree structure:
 $$
-\Delta W_{\text{global}} = \sum_{i=1}^{N} \alpha_i \cdot \Delta W_i
+U_{final} = \text{Fold}(\dots \text{Fold}(U_1, U_2), \dots \text{Fold}(U_{N-1}, U_N))
 $$
+If any fold fails (indicating a malicious client), the Aggregator bisects the tree to find and discard the bad actor.
 
-where $\alpha_i$ are aggregation weights.
+#### Path B: Homomorphic Aggregation (The Math)
+The Aggregator sums the commitments provided by the valid clients:
+$$
+C_{total} = \sum_{i=1}^{N} C_{\Delta W_i}
+$$
+It then calculates the actual global average:
+$$
+\Delta W_{\text{global}} = \frac{1}{N} \sum \Delta W_i
+$$
 
 ---
 
-### Step 7 — Proof of Aggregation (Off-Chain)
+### Step 7 — Final Proof Generation (Off-Chain)
 
-The aggregator generates a Proof of Aggregation (PoA) attesting that:
+The Aggregator generates **One Final Proof** ($\Pi_{final}$) that attests to the validity of the **Root Instance** $U_{final}$.
 
-- All inputs correspond to valid Proofs of Training
-- The aggregation rule was applied correctly
+By proving $U_{final}$, the Aggregator mathematically proves that *all* folded clients trained correctly.
 
 ---
 
 ### Step 8 — Aggregation Verification and Finalization (On-Chain)
 
-The aggregator submits:
-- Aggregation proof
-- Commitment to the global update
+The Aggregator submits to the Smart Contract:
+1.  The Final Proof $\Pi_{final}$
+2.  The Global Update $\Delta W_{\text{global}}$
+3.  The Sum of Commitments $C_{total}$
 
-The smart contract:
-- Verifies the Proof of Aggregation
-- Finalizes the federated round
-- Releases rewards or applies penalties
+The Smart Contract performs **Two Checks**:
 
-The global model update is now the input for the next round.
+#### Check A: Validity Check (Did they train?)
+It verifies $\Pi_{final}$.
+> *Pass implication:* Every client included in the fold trained their model correctly according to the rules.
 
----
+#### Check B: Homomorphic Check (Did the Aggregator sum honestly?)
+It calculates the commitment of the submitted global update and compares it to the sum of client commitments:
+$$
+\mathrm{Commit}(\Delta W_{\text{global}}) \stackrel{?}{=} \frac{1}{N} \cdot C_{total}
+$$
+> *Pass implication:* The Aggregator actually used the weights from the valid clients to compute the global model.
 
+**If both pass:** The round is finalized, rewards are released, and $\Delta W_{\text{global}}$ becomes the start of the next round.
