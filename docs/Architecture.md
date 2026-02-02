@@ -15,12 +15,11 @@ The system combines:
 ### 1. Client (Data Silo)
 - Holds private local dataset $D$
 - Performs local training
-- accumulates proof of the model using Mira
+- Generates zero-knowledge proofs
 
 ### 2. Aggregator
-- creates a single accumulated proof of all model
-- Generates a proof for all accululated models
-- Generates a proof for the accumulated model
+- Coordinates aggregation of client updates
+- Generates a proof of correct aggregation
 
 ### 3. Verifier
 - Verifies zero-knowledge proofs
@@ -55,7 +54,7 @@ A smart contract initializes a federated learning round by publishing:
 - Public randomness (seed) $\text{seed}$
 - Participation rules (deadlines, stake, rewards)
 
-<!-- The public randomness is used to deterministically select training batches. -->
+The public randomness is used to deterministically select training batches.
 
 ---
 
@@ -84,7 +83,7 @@ but is not trusted by itself.
 
 ### Step 2 — Input and Output Binding (On-Chain)
 
-Before generating an accumulation, the client binds its inputs and outputs using a smart contract.
+Before generating a proof, the client binds its inputs and outputs using a smart contract.
 
 - Input binding happens before training
 - Output binding happens after training

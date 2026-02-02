@@ -169,7 +169,7 @@ Only this committed update is allowed to participate in aggregation.
 The bound single-step (or K-step) statement becomes:
 
 $$
-    ext{Given } C_D, \text{policy}, \text{seed} :\quad (W_t, B_t) \;\longrightarrow\; W_{t+1}
+	ext{Given } C_D, \text{policy}, \text{seed} :\quad (W_t, B_t) \;\longrightarrow\; W_{t+1}
 $$
 
 ---
@@ -185,7 +185,7 @@ verifier service):
 
 The smart contract:
 - Verifies the proof (directly, or checks a succinct proof from an
-    off-chain verifier)
+	off-chain verifier)
 - Ensures the proof is bound to the registered dataset and update
 - Marks the client update as valid / eligible for aggregation
 
@@ -200,7 +200,7 @@ should enforce *non-triviality* conditions, e.g.:
 - Bounded gradient norm or minimum loss improvement
 - Reject zero, replayed, or fabricated updates
 - Optional on-chain policy that encodes these thresholds and is checked
-    in-circuit
+	in-circuit
 
 These constraints ensure that only meaningful contributions enter the
 aggregation phase.
@@ -243,11 +243,11 @@ training step.
 **Status:** ⏳ Planned
 
 - Each recursive step:
-    - Verifies the previous (folded) proof
-    - Applies one additional **bound** training step (respecting dataset,
-        randomness, and policy commitments from Phase 2)
+	- Verifies the previous (folded) proof
+	- Applies one additional **bound** training step (respecting dataset,
+		randomness, and policy commitments from Phase 2)
 - Final recursive proof attests to the full local training trajectory
-    from $W_0$ to $W_K$ under the bound inputs and policy
+	from $W_0$ to $W_K$ under the bound inputs and policy
 
 ---
 
@@ -255,11 +255,11 @@ training step.
 **Status:** ⏳ Planned
 
 - Each recursive step takes a commitment to the previous model state
-    and outputs a commitment to the new model state
+	and outputs a commitment to the new model state
 - The recursion enforces continuity of the model sequence, preventing
-    state forking or inconsistent trajectories
+	state forking or inconsistent trajectories
 - Enables succinct audit trails: a verifier only needs the initial and
-    final commitments plus the recursive proof
+	final commitments plus the recursive proof
 
 ---
 
@@ -377,7 +377,7 @@ B_t = \mathrm{PRF}(\text{seed}, \dots)
 \;\land\;
 B_t \subseteq D
 \;\land\;
-    ext{training policy respected}
+	ext{training policy respected}
 $$
 
 and that:
