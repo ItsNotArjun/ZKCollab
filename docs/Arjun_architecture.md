@@ -15,10 +15,10 @@ The system combines:
 ### 1. Client (Data Silo)
 - Holds private local dataset $D$
 - Performs local training
-- Generates model accumulations
+- Generates model Instances
 
 ### 2. Aggregator
-- Coordinates aggregation of client updates via accumulations
+- Coordinates aggregation of client updates via Instances
 - Creates 1 singular proof for all the clients under it
 - Generates a proof of correct aggregation
 
@@ -84,7 +84,7 @@ but is not trusted by itself.
 
 ### Step 2 — Input and Output Binding (On-Chain)
 
-Before generating a accumulation, the client binds its inputs and outputs using a smart contract.
+Before generating an instance, the client binds its inputs and outputs using a smart contract.
 
 - Input binding happens before training
 - Output binding happens after training
@@ -127,11 +127,11 @@ This ensures:
 
 ---
 
-### Step 4 — Accumulation Generation (Off-Chain)
+### Step 4 — Instnace Generation (Off-Chain)
 
-The client generates a accumulation of its training.
+The client generates a instance of its training.
 
-The accumulation attests that:
+The instance attests that:
 
 $$
 (W_t, B_t) \;\longrightarrow\; W_{t+1}
@@ -164,7 +164,7 @@ subject to:
 - Batch selection derived from $\text{seed}$
 - Output commitment $C_{\Delta W}$
 ---
-The client then submits its accumulation in the form of a tuple: $$ Pi​=\{{Wnew​,Ui​}\} $$
+The client then submits its instance in the form of a tuple: $$ Pi​=\{{Wnew​,Ui​}\} $$
 where $Wnew$ are the new weights and $Ui$ is the accumulation. 
 
 ---
@@ -173,7 +173,7 @@ where $Wnew$ are the new weights and $Ui$ is the accumulation.
 
 The client submits to the smart contract:
 
-- Accumulation of Training (or its hash)
+- Instance of Training (or its hash)
 - References to $C_D$ and $C_{\Delta W}$
 
 Verification is done at aggregation

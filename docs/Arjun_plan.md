@@ -180,7 +180,7 @@ $$
 Client submits to the smart contract (directly or via an off-chain
 verifier service):
 
-- Accumulation of it's model (single-step or recursively folded multi-step)
+- Instance of it's model (single-step or recursively folded multi-step)
 - References to $C_D$ and $C_{\Delta W}$
 
 <!-- The smart contract:
