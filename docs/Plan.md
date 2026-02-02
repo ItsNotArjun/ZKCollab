@@ -386,4 +386,3 @@ and that:
 - Aggregation is performed correctly over these committed updates
 - The final global model commitment corresponds to the claimed training
   history
-

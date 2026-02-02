@@ -15,10 +15,11 @@ The system combines:
 ### 1. Client (Data Silo)
 - Holds private local dataset $D$
 - Performs local training
-- Generates zero-knowledge proofs
+- Generates model Instances
 
 ### 2. Aggregator
-- Coordinates aggregation of client updates
+- Coordinates aggregation of client updates via Instances
+- Creates 1 singular proof for all the clients under it
 - Generates a proof of correct aggregation
 
 ### 3. Verifier
@@ -83,7 +84,7 @@ but is not trusted by itself.
 
 ### Step 2 — Input and Output Binding (On-Chain)
 
-Before generating a proof, the client binds its inputs and outputs using a smart contract.
+Before generating an instance, the client binds its inputs and outputs using a smart contract.
 
 - Input binding happens before training
 - Output binding happens after training
@@ -126,11 +127,11 @@ This ensures:
 
 ---
 
-### Step 4 — Proof of Training Generation (Off-Chain)
+### Step 4 — Instnace Generation (Off-Chain)
 
-The client generates a zero-knowledge Proof of Training (PoT).
+The client generates a instance of its training.
 
-The proof attests that:
+The instance attests that:
 
 $$
 (W_t, B_t) \;\longrightarrow\; W_{t+1}
@@ -142,13 +143,13 @@ $$
 W_{t+1} = W_t - \eta \cdot \nabla \mathcal{L}(W_t; B_t)
 $$
 
-Using recursion, multiple steps are compressed into a single proof asserting:
+Using recursion, multiple steps are compressed into a single accumulation asserting:
 
 $$
 W_0 \;\longrightarrow\; W_K
 $$
 
-Formally, the proof establishes:
+Formally, the accumulation establishes:
 
 $$
 \exists \; W_1, \dots, W_{K-1}
@@ -162,6 +163,9 @@ subject to:
 - Training policy commitment
 - Batch selection derived from $\text{seed}$
 - Output commitment $C_{\Delta W}$
+---
+The client then submits its instance in the form of a tuple: $$ Pi​=\{{Wnew​,Ui​}\} $$
+where $Wnew$ are the new weights and $Ui$ is the accumulation. 
 
 ---
 
@@ -169,23 +173,27 @@ subject to:
 
 The client submits to the smart contract:
 
-- Proof of Training (or its hash)
+- Instance of Training (or its hash)
 - References to $C_D$ and $C_{\Delta W}$
 
-Verification can be done in two ways:
-- **Off-chain verification** with on-chain attestation (recommended)
-- **On-chain verification** using a verifier contract (expensive)
-
-Only proofs that verify successfully are accepted.
-
+Verification is done at aggregation
 ---
 
 ## Aggregation Phase
 
 ### Step 6 — Aggregation of Client Updates (Off-Chain)
+The aggregator collects all client accumulation and recursively combines them in
+the form of a binary tree.
 
-The aggregator collects all valid client updates $\Delta W_i$
-whose commitments and proofs were accepted on-chain.
+The aggregator then generates a singular proof for the entire tree. If the proof is valid,
+all clients under the aggregator are valid.
+If the proof is not valid, the aggregator splits the tree to find the individual bad apples.
+Once found, the aggregator removes the bad apples and penalises them.
+The proof is them recomputed.
+
+
+The aggregator collects all client updates $\Delta W_i$
+whose commitments and proofs were accepted.
 
 The global update is computed as:
 
@@ -220,3 +228,4 @@ The smart contract:
 The global model update is now the input for the next round.
 
 ---
+
