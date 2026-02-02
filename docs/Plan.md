@@ -1,8 +1,8 @@
 # Plan for Secure Cross-Silo Federated Learning
 
 This document describes the roadmap for building a secure cross-silo
-federated learning system using zero-knowledge proofs and
-blockchain-based binding, coordination, and verification.
+federated learning system using zero-knowledge proofs, **recursive folding**,
+and blockchain-based binding, coordination, and verification.
 
 ---
 
@@ -81,11 +81,11 @@ This single-step proof is the **atomic unit** for all future work.
 
 ---
 
-## Phase 2 — On-Chain Binding & Verifiable Training (Planned)
+## Phase 2 — On-Chain Binding & Accumulator Instances (Planned)
 
 **Goal:** Cryptographically bind training inputs, randomness, policy, and
-outputs using smart contracts, so proofs correspond to *real* training
-and cannot be replayed or cherry-picked.
+outputs using smart contracts. Clients will generate **Accumulator Instances**
+instead of full SNARKs for efficiency.
 
 ---
 
@@ -149,7 +149,7 @@ changing training behavior between proof instances.
 
 ---
 
-### 2.4 On-Chain Update Commitment
+### 2.4 On-Chain Update Commitment & Instance Binding
 **Status:** ⏳ Planned
 
 After $K$ local steps, the client computes the local update:
@@ -158,60 +158,35 @@ $$
 \Delta W = W_K - W_0
 $$
 
-and commits to it on-chain:
+The client commits to it on-chain:
 
 $$
 C_{\Delta W} = \mathrm{Commit}(\Delta W)
 $$
 
-Only this committed update is allowed to participate in aggregation.
-
-The bound single-step (or K-step) statement becomes:
-
-$$
-	ext{Given } C_D, \text{policy}, \text{seed} :\quad (W_t, B_t) \;\longrightarrow\; W_{t+1}
-$$
+**Crucially**, this $C_{\Delta W}$ is embedded as a public input in the
+client's ZK Accumulator Instance. This binds the cryptographic verification
+trace to the actual weights submitted.
 
 ---
 
-### 2.5 On-Chain Proof Submission & Verification
+### 2.5 Accumulator Instance Submission
 **Status:** ⏳ Planned
 
-Client submits to the smart contract (directly or via an off-chain
-verifier service):
+Client submits to the Aggregator (Off-Chain):
 
-- Proof of Training (single-step or recursively folded multi-step)
-- References to $C_D$ and $C_{\Delta W}$
+- The Model Update $\Delta W$
+- The **Accumulator Instance** $(U_{client})$
+- References to on-chain $C_D$ and $C_{\Delta W}$
 
-The smart contract:
-- Verifies the proof (directly, or checks a succinct proof from an
-	off-chain verifier)
-- Ensures the proof is bound to the registered dataset and update
-- Marks the client update as valid / eligible for aggregation
+*Note: Verification does not happen here. The Smart Contract only records the binding; the Aggregator performs the verification via folding in Phase 5.*
 
 ---
 
-### 2.6 Non-Triviality Constraints
-**Status:** ⏳ Planned
+## Phase 3 — Recursive Client-Side Folding (Planned)
 
-To avoid degenerate or adversarial updates, the protocol and circuits
-should enforce *non-triviality* conditions, e.g.:
-
-- Bounded gradient norm or minimum loss improvement
-- Reject zero, replayed, or fabricated updates
-- Optional on-chain policy that encodes these thresholds and is checked
-	in-circuit
-
-These constraints ensure that only meaningful contributions enter the
-aggregation phase.
-
----
-
-## Phase 3 — Recursive Proof of Training (Planned)
-
-**Goal:** Compress many local training steps into one succinct **recursive
-Proof of Training** while preserving all binding guarantees from
-Phase 2.
+**Goal:** Compress many local training steps into one succinct **Client
+Instance** using intra-client recursion.
 
 Local training evolution:
 
@@ -219,13 +194,7 @@ $$
 W_0 \;\longrightarrow\; W_1 \;\longrightarrow\; \dots \;\longrightarrow\; W_K
 $$
 
-Recursive proof attests:
-
-$$
-W_0 \;\longrightarrow\; W_K
-$$
-
-Formally:
+Recursive folding asserts:
 
 $$
 \exists \; W_1, \dots, W_{K-1}
@@ -234,32 +203,16 @@ W_{i+1} = \mathrm{Step}(W_i, B_i)
 \quad \forall i \in [0, K-1]
 $$
 
-Each recursive step verifies the previous proof and applies one more
-training step.
-
 ---
 
 ### 3.1 Recursive Folding of Bound Training Steps
 **Status:** ⏳ Planned
 
+- The client uses Mira/Nova folding to compress $K$ steps.
 - Each recursive step:
-	- Verifies the previous (folded) proof
-	- Applies one additional **bound** training step (respecting dataset,
-		randomness, and policy commitments from Phase 2)
-- Final recursive proof attests to the full local training trajectory
-	from $W_0$ to $W_K$ under the bound inputs and policy
-
----
-
-### 3.2 State Commitment Propagation
-**Status:** ⏳ Planned
-
-- Each recursive step takes a commitment to the previous model state
-	and outputs a commitment to the new model state
-- The recursion enforces continuity of the model sequence, preventing
-	state forking or inconsistent trajectories
-- Enables succinct audit trails: a verifier only needs the initial and
-	final commitments plus the recursive proof
+    - Folds the previous step's instance
+    - Applies one additional **bound** training step
+- Result: A single Client Instance $U_{client}$ representing the full local training trajectory.
 
 ---
 
@@ -271,119 +224,84 @@ training step.
 Extend recursion and aggregation across *federated learning rounds* to
 get end-to-end auditability of long-running training.
 
-Across rounds, model evolution is:
-
-$$
-W_0 \;\longrightarrow\; W_1 \;\longrightarrow\; W_2 \;\longrightarrow\; \dots \;\longrightarrow\; W_K
-$$
-
-Conceptually:
-
-- Within each round: recursively fold local client steps (Phase 3)
-- Across rounds: fold global updates, producing a single long-horizon
-  Proof of Training
-
 ---
 
-## Phase 5 — Proof of Aggregation (Planned)
+## Phase 5 — Parallel Aggregation & Verification (Planned)
 
 **Goal:** Prove that the aggregator correctly combined valid client
-updates, *and* that those updates are themselves bound to on-chain
-Proofs of Training (potentially already recursively folded across
-rounds).
+updates using **Parallel Folding** (for validity) and **Homomorphic
+Commitments** (for aggregation logic).
 
 ---
 
-### 5.1 Aggregation with On-Chain Binding
+### 5.1 Parallel Validity Folding (The Tree)
 **Status:** ⏳ Planned
 
-Only updates whose dataset commitments, policies, and training proofs
-are registered on-chain are eligible for aggregation.
-
-Aggregation rule (for example, weighted averaging):
+The Aggregator constructs a Binary Folding Tree to compress $N$ client instances:
 
 $$
-\Delta W_{\text{global}} = \sum_{i=1}^{N} \alpha_i \cdot \Delta W_i
+U_{root} = \text{Fold}(\dots \text{Fold}(U_1, U_2) \dots )
 $$
 
-- Each $\Delta W_i$ must match a committed $C_{\Delta W_i}$ associated
-  with a valid Proof of Training
-- Weights $\alpha_i$ are determined by the protocol (e.g. data size,
-  reputation, or uniform)
+- **Optimistic Execution:** Aggregator folds all instances.
+- **Bisect & Ban:** If the root check fails, the tree is bisected to identify and remove malicious client instances.
+- **Result:** A single Root Instance $U_{root}$ that attests "All folded clients trained correctly."
 
 ---
 
-### 5.2 Aggregation Circuit
+### 5.2 Homomorphic Aggregation (The Math)
 **Status:** ⏳ Planned
 
-Design a ZK circuit (or set of circuits) that:
+The Aggregator computes the global model using the additive properties of commitments:
 
-- Verifies correct application of the aggregation rule (e.g., weighted
-  average)
-- Takes as *inputs* the committed client updates and aggregation
-  coefficients
-- Outputs a commitment to the aggregated global update $\Delta W_{\text{global}}$
+$$
+C_{total} = \sum_{i=1}^{N} C_{\Delta W_i}
+$$
 
-This circuit can be composed with recursive PoT proofs, or verified on
-its own with references to the underlying client PoTs.
+$$
+\Delta W_{\text{global}} = \frac{1}{N} \sum \Delta W_i
+$$
+
+The commitment $C_{total}$ serves as the cryptographic truth of the sum of all *valid* updates.
 
 ---
 
-### 5.3 Linking PoT to PoA
+### 5.3 Final Proof Generation
 **Status:** ⏳ Planned
 
-- Ensure that every aggregation input $\Delta W_i$ corresponds to a
-  **valid** Proof of Training bound on-chain
-- Prevent any unproven, fake, or off-policy updates from entering the
-  aggregation circuit
-- Optionally encode this linkage directly in the aggregation circuit via
-  commitments / hashes to the underlying PoT statements
+The Aggregator runs the full SNARK Prover **only once** on the final $U_{root}$.
+
+- Input: $U_{root}$
+- Output: One succinct Proof $\Pi_{final}$
 
 ---
 
-### 5.4 Aggregation Proof & Finalization
+### 5.4 Dual-Check Verification (On-Chain)
 **Status:** ⏳ Planned
 
-Aggregator submits:
+The Smart Contract performs the final verification to close the round.
 
-- Aggregation proof (for the chosen rule, e.g. weighted average)
-- Commitment to the resulting global update
-- References to all client PoT commitments / proofs used
+**Check 1: Validity (The Proof)**
+- Verifies $\Pi_{final}$.
+- *Ensures:* Every client in the fold respected the training policy.
 
-Smart contract:
-
-- Verifies aggregation correctness (directly or via a succinct outer
-  proof)
-- Checks that all included client updates are on-chain and valid
-- Finalizes the round and optionally releases rewards / enforces slashing
+**Check 2: Integrity (The Homomorphic Check)**
+- Verifies that the global model matches the sum of the client commitments:
+  $$
+  \mathrm{Commit}(\Delta W_{\text{global}}) \stackrel{?}{=} \frac{1}{N} \cdot C_{total}
+  $$
+- *Ensures:* The Aggregator did not fake the global weights.
 
 ---
 
-### Final Proof of Training Statement
+### Final Statement
 
-The final end-to-end Proof of Training and Aggregation establishes:
-
-$$
-\exists \; W_1, \dots, W_{K-1}
-\;\; \text{s.t.} \;\;
-W_0 \;\longrightarrow\; W_K
-$$
-
-subject to the constraints:
+The end-to-end system establishes:
 
 $$
-\forall t :\;
-B_t = \mathrm{PRF}(\text{seed}, \dots)
-\;\land\;
-B_t \subseteq D
-\;\land\;
-	ext{training policy respected}
+\exists \; \{W_{i,0} \to W_{i,K}\}_{i=1}^N
 $$
 
-and that:
-
-- All local updates are committed on-chain and backed by valid PoTs
-- Aggregation is performed correctly over these committed updates
-- The final global model commitment corresponds to the claimed training
-  history
-
+subject to:
+1.  **Correct Training:** All $N$ clients followed the gradient descent path with valid data.
+2.  **Correct Aggregation:** The Global Model is the exact average of these $N$ clients.
