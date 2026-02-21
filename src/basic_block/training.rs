@@ -1,6 +1,6 @@
 use super::{BasicBlock, Data, DataEnc, PairingCheck, ProveVerifyCache, SRS};
 use crate::basic_block::{EqBasicBlock, MatMulBasicBlock, MulBasicBlock};
-use crate::training_constraints::{derive_challenge, FIXED_SCALE};
+use crate::training::constraints::{derive_challenge, FIXED_SCALE};
 use crate::util;
 use ark_ff::PrimeField;
 use ark_bn254::{Fr, G1Affine, G1Projective, G2Affine, G2Projective};
