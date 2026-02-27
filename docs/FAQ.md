@@ -65,4 +65,4 @@ with the agreed upon model.
 
 
 
-## update security.md doc to match architecture functionality. - Sameer
+## update security.md doc to match architecture functionality. - Sameer - DONE.

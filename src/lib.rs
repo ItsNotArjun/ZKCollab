@@ -10,8 +10,6 @@ pub mod ptau;
 pub mod tests;
 pub mod util;
 pub mod training;
-pub mod training_constraints;
-pub mod training_compile;
 
 use once_cell::sync::Lazy;
 use std::env;
