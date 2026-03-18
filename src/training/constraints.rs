@@ -26,6 +26,24 @@ pub fn enforce_randomness_binding(challenge: Fr, transcript: &[u8]) -> Result<()
   Ok(())
 }
 
+/// Convert a field element back to i64. Assumes the encoded integer
+/// fits within ±2^62.  Small positives sit in limb 0; small negatives
+/// are stored as p − |v| and detected via the upper limbs.
+fn fr_to_i64(x: Fr) -> i64 {
+  let b = x.into_bigint();
+  if b.0[1] == 0 && b.0[2] == 0 && b.0[3] == 0 {
+    b.0[0] as i64
+  } else {
+    let neg = (-x).into_bigint();
+    -(neg.0[0] as i64)
+  }
+}
+
+/// Maximum allowed difference (in Q16 units) between recomputed and
+/// witness gradient elements. The witness is produced via float
+/// PyTorch then quantised, so ±1 LSB rounding error is expected.
+const GRAD_TOLERANCE: i64 = 1;
+
 pub fn enforce_linear_vjp(
   x: &ArrayD<Fr>,
   w: &ArrayD<Fr>,
@@ -45,37 +63,49 @@ pub fn enforce_linear_vjp(
     return Err("linear VJP dimension mismatch".to_string());
   }
 
-  let mut expected_grad_x = ArrayD::zeros(IxDyn(x1.shape()));
-  {
-    let mut exp = expected_grad_x.view_mut().into_dimensionality::<Ix1>().unwrap();
-    for j in 0..n {
-      let mut acc = Fr::from(0u64);
-      for i in 0..m {
-        acc += w2[(i, j)] * up[i];
-      }
-      exp[j] = acc;
-    }
-  }
+  let scale = FIXED_SCALE as i64;
 
-  let mut expected_grad_w = ArrayD::zeros(IxDyn(w2.shape()));
-  {
-    let mut exp = expected_grad_w.view_mut().into_dimensionality::<Ix2>().unwrap();
+  // grad_x = W^T @ upstream, rescaled from Q32 to Q16.
+  // Uses integer truncation (toward zero) to match PyTorch's
+  // float-then-round quantisation within ±1.
+  if !same_shape(&ArrayD::zeros(IxDyn(x1.shape())), grad_x) {
+    return Err("linear VJP grad_x shape mismatch".to_string());
+  }
+  let gx1 = grad_x.view().into_dimensionality::<Ix1>().map_err(|_| "grad_x not 1D")?;
+  for j in 0..n {
+    let mut acc: i64 = 0;
     for i in 0..m {
-      for j in 0..n {
-        exp[(i, j)] = up[i] * x1[j];
+      acc += fr_to_i64(w2[(i, j)]) * fr_to_i64(up[i]);
+    }
+    let expected = acc / scale; // integer truncation toward zero
+    let actual = fr_to_i64(gx1[j]);
+    if (expected - actual).abs() > GRAD_TOLERANCE {
+      return Err(format!(
+        "linear VJP grad_x incorrect at index {}: expected {} got {}",
+        j, expected, actual
+      ));
+    }
+  }
+
+  // grad_w = upstream ⊗ x, rescaled from Q32 to Q16.
+  if !same_shape(&ArrayD::zeros(IxDyn(w2.shape())), grad_w) {
+    return Err("linear VJP grad_w shape mismatch".to_string());
+  }
+  let gw2 = grad_w.view().into_dimensionality::<Ix2>().map_err(|_| "grad_w not 2D")?;
+  for i in 0..m {
+    for j in 0..n {
+      let prod = fr_to_i64(up[i]) * fr_to_i64(x1[j]);
+      let expected = prod / scale;
+      let actual = fr_to_i64(gw2[(i, j)]);
+      if (expected - actual).abs() > GRAD_TOLERANCE {
+        return Err(format!(
+          "linear VJP grad_w incorrect at [{},{}]: expected {} got {}",
+          i, j, expected, actual
+        ));
       }
     }
   }
 
-  if !same_shape(&expected_grad_x, grad_x) || !same_shape(&expected_grad_w, grad_w) {
-    return Err("linear VJP output shape mismatch".to_string());
-  }
-  if expected_grad_x != *grad_x {
-    return Err("linear VJP grad_x incorrect".to_string());
-  }
-  if expected_grad_w != *grad_w {
-    return Err("linear VJP grad_w incorrect".to_string());
-  }
   Ok(())
 }
 
@@ -93,15 +123,22 @@ pub fn enforce_relu_vjp(x: &ArrayD<Fr>, upstream: &ArrayD<Fr>, grad_x: &ArrayD<F
   Ok(())
 }
 
-pub fn enforce_sgd_update(w_t: &ArrayD<Fr>, grad: &ArrayD<Fr>, lr: Fr, w_next: &ArrayD<Fr>) -> Result<(), String> {
+pub fn enforce_sgd_update(w_t: &ArrayD<Fr>, grad: &ArrayD<Fr>, lr_scaled: i64, w_next: &ArrayD<Fr>) -> Result<(), String> {
   if w_t.shape() != grad.shape() || w_t.shape() != w_next.shape() {
     return Err("SGD shape mismatch".to_string());
   }
-  let scale = Fr::from(FIXED_SCALE);
+  let scale = FIXED_SCALE as i64;
   for ((&wt, &g), &wn) in w_t.iter().zip(grad.iter()).zip(w_next.iter()) {
-    let update = lr * g / scale;
-    if wt - update != wn {
-      return Err("SGD update constraint violated".to_string());
+    let wt_i = fr_to_i64(wt);
+    let g_i = fr_to_i64(g);
+    let wn_i = fr_to_i64(wn);
+    let update = lr_scaled * g_i / scale;
+    let expected = wt_i - update;
+    if (expected - wn_i).abs() > GRAD_TOLERANCE {
+      return Err(format!(
+        "SGD update constraint violated: expected {} got {} (diff {})",
+        expected, wn_i, expected - wn_i
+      ));
     }
   }
   Ok(())
@@ -114,21 +151,27 @@ mod tests {
 
   #[test]
   fn test_linear_vjp_correct() {
-    let x = arr1(&[Fr::from(3u64)]).into_dyn();
-    let w = arr2(&[[Fr::from(2u64)]]).into_dyn();
-    let upstream = arr1(&[Fr::from(5u64)]).into_dyn();
-    let grad_x = arr1(&[Fr::from(10u64)]).into_dyn();
-    let grad_w = arr2(&[[Fr::from(15u64)]]).into_dyn();
+    // Values are Q16-scaled: real values 3, 2, 5 → 3*2^16, 2*2^16, 5*2^16
+    let s = FIXED_SCALE;
+    let x = arr1(&[Fr::from(3 * s)]).into_dyn();
+    let w = arr2(&[[Fr::from(2 * s)]]).into_dyn();
+    let upstream = arr1(&[Fr::from(5 * s)]).into_dyn();
+    // grad_x = W^T @ upstream / FIXED_SCALE = (2*s)*(5*s)/s = 10*s
+    let grad_x = arr1(&[Fr::from(10 * s)]).into_dyn();
+    // grad_w = upstream * x / FIXED_SCALE = (5*s)*(3*s)/s = 15*s
+    let grad_w = arr2(&[[Fr::from(15 * s)]]).into_dyn();
     assert!(enforce_linear_vjp(&x, &w, &upstream, &grad_x, &grad_w).is_ok());
   }
 
   #[test]
   fn test_linear_vjp_bad_grad() {
-    let x = arr1(&[Fr::from(3u64)]).into_dyn();
-    let w = arr2(&[[Fr::from(2u64)]]).into_dyn();
-    let upstream = arr1(&[Fr::from(5u64)]).into_dyn();
-    let grad_x = arr1(&[Fr::from(10u64)]).into_dyn();
-    let grad_w = arr2(&[[Fr::from(16u64)]]).into_dyn();
+    let s = FIXED_SCALE;
+    let x = arr1(&[Fr::from(3 * s)]).into_dyn();
+    let w = arr2(&[[Fr::from(2 * s)]]).into_dyn();
+    let upstream = arr1(&[Fr::from(5 * s)]).into_dyn();
+    let grad_x = arr1(&[Fr::from(10 * s)]).into_dyn();
+    // Wrong by more than tolerance: should be 15*s, here 16*s (diff = s >> 1)
+    let grad_w = arr2(&[[Fr::from(16 * s)]]).into_dyn();
     assert!(enforce_linear_vjp(&x, &w, &upstream, &grad_x, &grad_w).is_err());
   }
 
@@ -150,20 +193,24 @@ mod tests {
 
   #[test]
   fn test_sgd_update_correct() {
-    let w = arr1(&[Fr::from(100u64)]).into_dyn();
-    let grad = arr1(&[Fr::from(1u64)]).into_dyn();
-    let lr = Fr::from(FIXED_SCALE);
-    let w_next = arr1(&[Fr::from(99u64)]).into_dyn();
-    assert!(enforce_sgd_update(&w, &grad, lr, &w_next).is_ok());
+    // w=100*S, grad=1*S, lr_scaled=S (lr=1.0) → update = S*S/S = S
+    // w_next = 100*S - S = 99*S
+    let s = FIXED_SCALE;
+    let w = arr1(&[Fr::from(100 * s)]).into_dyn();
+    let grad = arr1(&[Fr::from(1 * s)]).into_dyn();
+    let lr_scaled = s as i64;
+    let w_next = arr1(&[Fr::from(99 * s)]).into_dyn();
+    assert!(enforce_sgd_update(&w, &grad, lr_scaled, &w_next).is_ok());
   }
 
   #[test]
   fn test_sgd_update_bad() {
-    let w = arr1(&[Fr::from(100u64)]).into_dyn();
-    let grad = arr1(&[Fr::from(1u64)]).into_dyn();
-    let lr = Fr::from(FIXED_SCALE);
-    let w_next = arr1(&[Fr::from(100u64)]).into_dyn();
-    assert!(enforce_sgd_update(&w, &grad, lr, &w_next).is_err());
+    let s = FIXED_SCALE;
+    let w = arr1(&[Fr::from(100 * s)]).into_dyn();
+    let grad = arr1(&[Fr::from(1 * s)]).into_dyn();
+    let lr_scaled = s as i64;
+    let w_next = arr1(&[Fr::from(100 * s)]).into_dyn(); // unchanged = wrong
+    assert!(enforce_sgd_update(&w, &grad, lr_scaled, &w_next).is_err());
   }
 
   #[test]

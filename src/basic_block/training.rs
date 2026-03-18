@@ -4,7 +4,7 @@ use crate::training::constraints::{derive_challenge, FIXED_SCALE};
 use crate::util;
 use ark_ff::PrimeField;
 use ark_bn254::{Fr, G1Affine, G1Projective, G2Affine, G2Projective};
-use ndarray::{ArrayD, IxDyn};
+use ndarray::{ArrayD, Ix1, Ix2, IxDyn};
 use rand::{rngs::StdRng, SeedableRng};
 
 #[derive(Debug)]
@@ -73,9 +73,28 @@ impl BasicBlock for LinearBackwardBlock {
     let x = inputs[0];
     let w = inputs[1];
     let up = inputs[2];
-    assert!(x.len() == 1 && w.len() == 1 && up.len() == 1);
-    let grad_x = ArrayD::from_elem(IxDyn(&[1]), w.first().unwrap() * up.first().unwrap());
-    let grad_w = ArrayD::from_elem(IxDyn(&[1]), x.first().unwrap() * up.first().unwrap());
+    // x: [n], w: [m, n], upstream: [m]
+    let w2 = w.view().into_dimensionality::<Ix2>().expect("W must be 2D");
+    let x1 = x.view().into_dimensionality::<Ix1>().expect("x must be 1D");
+    let up1 = up.view().into_dimensionality::<Ix1>().expect("upstream must be 1D");
+    let m = w2.shape()[0];
+    let n = w2.shape()[1];
+    // grad_x = W^T * upstream
+    let mut gx_data = vec![Fr::from(0u64); n];
+    for j in 0..n {
+      for i in 0..m {
+        gx_data[j] += w2[(i, j)] * up1[i];
+      }
+    }
+    let grad_x = ArrayD::from_shape_vec(IxDyn(&[n]), gx_data).unwrap();
+    // grad_w = upstream outer x
+    let mut gw_data = vec![Fr::from(0u64); m * n];
+    for i in 0..m {
+      for j in 0..n {
+        gw_data[i * n + j] = up1[i] * x1[j];
+      }
+    }
+    let grad_w = ArrayD::from_shape_vec(IxDyn(&[m, n]), gw_data).unwrap();
     vec![grad_x, grad_w]
   }
 
@@ -171,10 +190,11 @@ impl BasicBlock for ReLUBackwardBlock {
     assert!(inputs.len() == 2);
     let act = inputs[0];
     let up = inputs[1];
-    assert!(act.len() == 1 && up.len() == 1);
-    let active = util::fr_to_int(*act.first().unwrap()) > 0;
-    let grad = if active { *up.first().unwrap() } else { Fr::from(0u64) };
-    vec![ArrayD::from_elem(IxDyn(&[1]), grad)]
+    assert_eq!(act.len(), up.len(), "ReLU backward: activation and upstream must have same length");
+    let data: Vec<Fr> = act.iter().zip(up.iter()).map(|(&a, &u)| {
+      if util::fr_to_int(a) > 0 { u } else { Fr::from(0u64) }
+    }).collect();
+    vec![ArrayD::from_shape_vec(IxDyn(act.shape()), data).unwrap()]
   }
 
   fn encodeOutputs(&self, srs: &SRS, _model: &ArrayD<Data>, _inputs: &Vec<&ArrayD<Data>>, outputs: &Vec<&ArrayD<Fr>>) -> Vec<ArrayD<Data>> {
@@ -236,10 +256,13 @@ impl BasicBlock for SGDUpdateBlock {
     let w = inputs[0];
     let grad = inputs[1];
     let lr = inputs[2];
-    assert!(w.len() == 1 && grad.len() == 1 && lr.len() == 1);
+    assert_eq!(w.len(), grad.len(), "SGD update: w and grad must have same length");
+    let lr_val = *lr.first().expect("lr must have at least one element");
     let scale = Fr::from(FIXED_SCALE);
-    let next = *w.first().unwrap() - *lr.first().unwrap() * *grad.first().unwrap() / scale;
-    vec![ArrayD::from_elem(IxDyn(&[1]), next)]
+    let data: Vec<Fr> = w.iter().zip(grad.iter()).map(|(&wi, &gi)| {
+      wi - lr_val * gi / scale
+    }).collect();
+    vec![ArrayD::from_shape_vec(IxDyn(w.shape()), data).unwrap()]
   }
 
   fn encodeOutputs(&self, srs: &SRS, _model: &ArrayD<Data>, _inputs: &Vec<&ArrayD<Data>>, outputs: &Vec<&ArrayD<Fr>>) -> Vec<ArrayD<Data>> {

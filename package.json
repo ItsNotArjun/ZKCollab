@@ -1,0 +1,19 @@
+{
+  "name": "zkcollab",
+  "version": "1.0.0",
+  "description": "<!-- This repository extends ZKTorch from proving only inference to proving entire training steps (forward pass, backward pass, and optimizer update) in zero knowledge.",
+  "main": "hardhat.config.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^6.1.2",
+    "hardhat": "^2.28.6"
+  }
+}

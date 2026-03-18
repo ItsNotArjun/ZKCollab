@@ -7,14 +7,20 @@ use rand::rngs::StdRng;
 pub struct AddBasicBlock;
 impl BasicBlock for AddBasicBlock {
   fn run(&self, _model: &ArrayD<Fr>, inputs: &Vec<&ArrayD<Fr>>) -> Vec<ArrayD<Fr>> {
-    assert!(inputs.len() == 2 && inputs[0].ndim() <= 1 && inputs[1].ndim() <= 1);
-    let mut r = ArrayD::zeros(IxDyn(&[std::cmp::max(inputs[0].len(), inputs[1].len())]));
-    if inputs[0].len() == 1 && inputs[1].ndim() > 0 {
-      azip!((r in &mut r, &x in inputs[1]) *r = x + inputs[0].first().unwrap());
-    } else if inputs[1].len() == 1 {
-      azip!((r in &mut r, &x in inputs[0]) *r = x + inputs[1].first().unwrap());
+    assert!(inputs.len() == 2);
+    // Flatten inputs to 1D for element-wise addition (supports any ndim).
+    let flat0: Vec<Fr> = inputs[0].iter().cloned().collect();
+    let flat1: Vec<Fr> = inputs[1].iter().cloned().collect();
+    let len = std::cmp::max(flat0.len(), flat1.len());
+    let mut r = ArrayD::zeros(IxDyn(&[len]));
+    if flat0.len() == 1 {
+      azip!((r in &mut r, &x in &ArrayD::from_shape_vec(IxDyn(&[flat1.len()]), flat1).unwrap()) *r = x + flat0[0]);
+    } else if flat1.len() == 1 {
+      azip!((r in &mut r, &x in &ArrayD::from_shape_vec(IxDyn(&[flat0.len()]), flat0).unwrap()) *r = x + flat1[0]);
     } else {
-      azip!((r in &mut r, &x in inputs[0], &y in inputs[1]) *r = x + y);
+      let a = ArrayD::from_shape_vec(IxDyn(&[flat0.len()]), flat0).unwrap();
+      let b = ArrayD::from_shape_vec(IxDyn(&[flat1.len()]), flat1).unwrap();
+      azip!((r in &mut r, &x in &a, &y in &b) *r = x + y);
     }
     vec![r]
   }

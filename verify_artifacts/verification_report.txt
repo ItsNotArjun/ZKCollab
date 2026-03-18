@@ -1,0 +1,8 @@
+ZKCollab Verifier Confirmation
+==============================
+deployed_root: 0x01bf57c3333fedd35cef7ca4c15ba092e8b0b8e8ea5fa8e8cfb19987c5a0e7ab
+computed_root: 0x01bf57c3333fedd35cef7ca4c15ba092e8b0b8e8ea5fa8e8cfb19987c5a0e7ab
+witness_root: 0x01bf57c3333fedd35cef7ca4c15ba092e8b0b8e8ea5fa8e8cfb19987c5a0e7ab
+proof_file: /mnt/c/Users/Abhishek/ZK_fork/ZKCollab/verify_artifacts/proof.bin
+proof_size_bytes: 2880
+result: PASSED

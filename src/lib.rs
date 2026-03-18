@@ -18,8 +18,14 @@ use std::io::Read;
 use std::path::Path;
 
 pub static CONFIG_FILE: Lazy<String> = Lazy::new(|| {
+  // Allow an explicit override via environment variable so that
+  // binaries whose first CLI arg is NOT a config file (e.g.
+  // generate_sample_proof) can still use the global CONFIG.
+  if let Ok(p) = env::var("ZK_CONFIG") {
+    return p;
+  }
   let args: Vec<String> = env::args().collect();
-  if args.len() == 2 {
+  if args.len() == 2 && (args[1].ends_with(".yaml") || args[1].ends_with(".yml")) {
     args[1].clone()
   } else {
     // Default to the repository config for test contexts where CLI args are absent.

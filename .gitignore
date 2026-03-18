@@ -5,3 +5,6 @@
 # OS files
 .DS_Store
 
+# Node / JS dependencies
+node_modules/
+
