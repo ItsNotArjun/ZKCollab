@@ -24,7 +24,6 @@ export HARDHAT_DISABLE_TELEMETRY_PROMPT=true
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR"
 BUILD_DIR="$PROJECT_DIR/build"
-WITNESS_V1="$PROJECT_DIR/step_witness_v1.json"
 WITNESS_V2="$PROJECT_DIR/step_witness_v2.json"
 ROOT_FILE="$PROJECT_DIR/merkle_root.txt"
 FLAT_DATA="$BUILD_DIR/flat_data.json"
@@ -55,7 +54,7 @@ echo "[2/4] Computing Merkle root of training data..."
 # regardless of its dimensionality.
 python3 -c "
 import json, sys
-with open('$WITNESS_V1') as f:
+with open('$WITNESS_V2') as f:
     w = json.load(f)
 def flatten(obj):
     if isinstance(obj, (list, tuple)):
@@ -80,7 +79,7 @@ echo "      Merkle root: $MERKLE_ROOT"
 echo "[3/4] Injecting Merkle root into witness..."
 python3 "$PROJECT_DIR/scripts/inject_root.py" \
     --root "$MERKLE_ROOT" \
-    --witness "$WITNESS_V1" \
+    --witness "$WITNESS_V2" \
     --output "$WITNESS_V2"
 echo "      Augmented witness: $WITNESS_V2"
 

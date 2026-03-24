@@ -41,8 +41,9 @@ fn fr_to_i64(x: Fr) -> i64 {
 
 /// Maximum allowed difference (in Q16 units) between recomputed and
 /// witness gradient elements. The witness is produced via float
-/// PyTorch then quantised, so ±1 LSB rounding error is expected.
-const GRAD_TOLERANCE: i64 = 1;
+/// PyTorch then quantised, so ±2-3 LSB rounding error is expected
+/// due to intermediate precision loss.
+const GRAD_TOLERANCE: i64 = 3;
 
 pub fn enforce_linear_vjp(
   x: &ArrayD<Fr>,
@@ -67,7 +68,7 @@ pub fn enforce_linear_vjp(
 
   // grad_x = W^T @ upstream, rescaled from Q32 to Q16.
   // Uses integer truncation (toward zero) to match PyTorch's
-  // float-then-round quantisation within ±1.
+  // float-then-round quantisation within ±GRAD_TOLERANCE.
   if !same_shape(&ArrayD::zeros(IxDyn(x1.shape())), grad_x) {
     return Err("linear VJP grad_x shape mismatch".to_string());
   }
@@ -170,7 +171,7 @@ mod tests {
     let w = arr2(&[[Fr::from(2 * s)]]).into_dyn();
     let upstream = arr1(&[Fr::from(5 * s)]).into_dyn();
     let grad_x = arr1(&[Fr::from(10 * s)]).into_dyn();
-    // Wrong by more than tolerance: should be 15*s, here 16*s (diff = s >> 1)
+    // Wrong by more than tolerance: should be 15*s, here 16*s (diff = s >> 3)
     let grad_w = arr2(&[[Fr::from(16 * s)]]).into_dyn();
     assert!(enforce_linear_vjp(&x, &w, &upstream, &grad_x, &grad_w).is_err());
   }

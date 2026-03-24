@@ -8,3 +8,7 @@
 # Node / JS dependencies
 node_modules/
 
+__pycache__/
+*.pyc
+step_witness_v2*.json
+step_witness_v2*.json
