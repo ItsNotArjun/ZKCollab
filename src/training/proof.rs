@@ -1,6 +1,7 @@
 use crate::basic_block::{Data, SRS};
 use crate::training::compile::{build_training_graph, ForwardOp, TrainingSpec};
 use crate::training::constraints::{FIXED_SCALE, enforce_linear_vjp, enforce_relu_vjp, enforce_sgd_update};
+use crate::training::data_binding::{build_data_binding_witness, enforce_data_binding};
 use crate::util::convert_to_data;
 use ark_bn254::{Fr, G1Affine, G2Affine};
 use ark_poly::univariate::DensePolynomial;
@@ -98,11 +99,22 @@ fn enforce_sample_step_algebra(w: &SampleWitnessV1) -> Result<(), String> {
   enforce_relu_vjp(&z1, &grad_a1, &grad_z1)?;
 
   // SGD updates for weights and biases
-  let lr_fr = i64_to_fr(w.lr_scaled) / Fr::from(FIXED_SCALE);
-  enforce_sgd_update(&w1_before, &grad_w1, lr_fr, &w1_after)?;
-  enforce_sgd_update(&b1_before, &grad_b1, lr_fr, &b1_after)?;
-  enforce_sgd_update(&w2_before, &grad_w2, lr_fr, &w2_after)?;
-  enforce_sgd_update(&b2_before, &grad_b2, lr_fr, &b2_after)?;
+  let lr_scaled = w.lr_scaled as i64;
+  enforce_sgd_update(&w1_before, &grad_w1, lr_scaled, &w1_after)?;
+  enforce_sgd_update(&b1_before, &grad_b1, lr_scaled, &b1_after)?;
+  enforce_sgd_update(&w2_before, &grad_w2, lr_scaled, &w2_after)?;
+  enforce_sgd_update(&b2_before, &grad_b2, lr_scaled, &b2_after)?;
+
+  // ---- Data Binding constraint ----
+  // If the witness carries an injected merkle_root, enforce that
+  // Poseidon_Merkle(raw_data) == merkle_root.
+  if let (Some(ref root_hex), Some(ref raw_data)) = (&w.merkle_root, &w.raw_data) {
+    let path_hex: Vec<String> = w.merkle_path.clone().unwrap_or_default();
+    let db_witness = build_data_binding_witness(root_hex, raw_data, &path_hex)?;
+    // PATH_DEPTH=32 is a generous upper bound; the runtime data
+    // length determines the actual tree depth dynamically.
+    enforce_data_binding::<32>(&db_witness)?;
+  }
 
   Ok(())
 }
@@ -117,7 +129,7 @@ fn enforce_sample_step_algebra(w: &SampleWitnessV1) -> Result<(), String> {
 /// that the sample proof pipeline can run end-to-end.
 pub fn prove_sample_step(_srs: &SRS, witness: &SampleWitnessV1) -> SampleProofV1 {
   if let Err(e) = enforce_sample_step_algebra(witness) {
-    eprintln!("warning: sample training step algebraic check failed: {}", e);
+    panic!("sample training step algebraic/data-binding check failed: {}", e);
   }
 
   // Placeholder: real implementation will call into Graph-based
@@ -143,19 +155,12 @@ fn serialize_proofs(
   Ok(buf)
 }
 
-/// End-to-end SNARK-backed proof for (a scalar slice of) the
-/// SampleModel training step. This currently projects the full
-/// 4x4 MLP witness down to a 1x1 toy example so that it can be
-/// expressed using the existing generic training graph.
+/// End-to-end SNARK-backed proof for the SampleModel training step.
+/// Accepts the full 4×4 MLP witness produced by generate_witness.py.
 pub fn prove_sample_step_snark(srs: &SRS, witness: &SampleWitnessV1) -> Result<SampleProofV1, String> {
-  // Reuse the algebraic checker to ensure the full witness is
-  // self-consistent before attempting SNARK proving.
-  if let Err(e) = enforce_sample_step_algebra(witness) {
-    eprintln!(
-      "warning: algebraic training-step check failed before SNARK proving: {}",
-      e
-    );
-  }
+  // Enforce algebraic and data-binding checks as a hard gate.
+  // If this fails, we do not allow proof generation to proceed.
+  enforce_sample_step_algebra(witness)?;
 
   let spec = TrainingSpec {
     ops: vec![ForwardOp::Linear, ForwardOp::ReLU, ForwardOp::Linear, ForwardOp::ReLU],
@@ -165,40 +170,21 @@ pub fn prove_sample_step_snark(srs: &SRS, witness: &SampleWitnessV1) -> Result<S
     return Err(format!("unexpected number of weight inputs in training graph: {}", num_weights));
   }
 
-  // For now we project the 4D vectors/matrices in the witness down
-  // to a single scalar coordinate so that they fit the current
-  // scalar-oriented training basic blocks.
-  let x0 = *witness.x.get(0).ok_or("witness.x missing index 0")?;
-  let grad_y0 = *witness.grad_y.get(0).ok_or("witness.grad_y missing index 0")?;
-  let w1_00 = *witness
-    .w1_before
-    .get(0)
-    .and_then(|row| row.get(0))
-    .ok_or("witness.w1_before[0][0] missing")?;
-  let w2_00 = *witness
-    .w2_before
-    .get(0)
-    .and_then(|row| row.get(0))
-    .ok_or("witness.w2_before[0][0] missing")?;
-
-  let x_fr = i64_to_fr(x0);
-  let grad_y_fr = i64_to_fr(grad_y0);
-  let w1_fr = i64_to_fr(w1_00);
-  let w2_fr = i64_to_fr(w2_00);
+  // Convert full witness vectors/matrices to field-element tensors.
   let lr_fr = i64_to_fr(witness.lr_scaled) / Fr::from(FIXED_SCALE);
 
   // Inputs layout expected by build_training_graph:
-  //  0: forward input activation
-  //  1: upstream gradient seed
-  //  2: learning rate
-  //  3: randomness challenge target for the Challenge/Eq blocks
-  //  4..: per-layer weights
-  let x_tensor = ArrayD::from_shape_vec(IxDyn(&[1]), vec![x_fr]).unwrap();
-  let upstream_tensor = ArrayD::from_shape_vec(IxDyn(&[1]), vec![grad_y_fr]).unwrap();
+  //  0: forward input activation  (vector, dim n)
+  //  1: upstream gradient seed     (vector, dim m)
+  //  2: learning rate              (scalar)
+  //  3: randomness challenge target for the Challenge/Eq blocks (scalar)
+  //  4..: per-layer weights        (matrices, m x n)
+  let x_tensor = vec_to_array1(&witness.x);
+  let upstream_tensor = vec_to_array1(&witness.grad_y);
   let lr_tensor = ArrayD::from_shape_vec(IxDyn(&[1]), vec![lr_fr]).unwrap();
   let dummy_chal_tensor = ArrayD::from_shape_vec(IxDyn(&[1]), vec![Fr::from(0u64)]).unwrap();
-  let w1_tensor = ArrayD::from_shape_vec(IxDyn(&[1, 1]), vec![w1_fr]).unwrap();
-  let w2_tensor = ArrayD::from_shape_vec(IxDyn(&[1, 1]), vec![w2_fr]).unwrap();
+  let w1_tensor = mat_to_array2(&witness.w1_before);
+  let w2_tensor = mat_to_array2(&witness.w2_before);
 
   let mut input_tensors = vec![x_tensor, upstream_tensor, lr_tensor, dummy_chal_tensor, w1_tensor, w2_tensor];
 
@@ -266,4 +252,84 @@ pub fn prove_sample_step_snark(srs: &SRS, witness: &SampleWitnessV1) -> Result<S
 
   let proof_bytes = serialize_proofs(&proofs).map_err(|e| e.to_string())?;
   Ok(SampleProofV1 { proof_bytes })
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::training::compile::{build_training_graph, ForwardOp, TrainingSpec};
+
+  /// Verify the graph `run()` operates on full 4×4 tensors, not scalars.
+  /// Traces shapes at every node to confirm nothing is silently 1×1.
+  #[test]
+  fn test_graph_run_uses_full_4x4_tensors() {
+    let spec = TrainingSpec {
+      ops: vec![ForwardOp::Linear, ForwardOp::ReLU, ForwardOp::Linear, ForwardOp::ReLU],
+    };
+    let (graph, models, num_weights) = build_training_graph(&spec);
+    assert_eq!(num_weights, 2);
+
+    // Build 4-element vectors and 4×4 weight matrices
+    let x: Vec<Fr> = (1..=4).map(|v| Fr::from(v as u64)).collect();
+    let x_tensor = ArrayD::from_shape_vec(IxDyn(&[4]), x).unwrap();
+
+    let grad_y: Vec<Fr> = (5..=8).map(|v| Fr::from(v as u64)).collect();
+    let upstream_tensor = ArrayD::from_shape_vec(IxDyn(&[4]), grad_y).unwrap();
+
+    let lr_tensor = ArrayD::from_shape_vec(IxDyn(&[1]), vec![Fr::from(1u64)]).unwrap();
+    let chal_tensor = ArrayD::from_shape_vec(IxDyn(&[1]), vec![Fr::from(0u64)]).unwrap();
+
+    let w1_data: Vec<Fr> = (1..=16).map(|v| Fr::from(v as u64)).collect();
+    let w1_tensor = ArrayD::from_shape_vec(IxDyn(&[4, 4]), w1_data).unwrap();
+
+    let w2_data: Vec<Fr> = (17..=32).map(|v| Fr::from(v as u64)).collect();
+    let w2_tensor = ArrayD::from_shape_vec(IxDyn(&[4, 4]), w2_data).unwrap();
+
+    let input_tensors = vec![x_tensor, upstream_tensor, lr_tensor, chal_tensor, w1_tensor, w2_tensor];
+    let inputs_ref: Vec<&ArrayD<Fr>> = input_tensors.iter().collect();
+    let model_refs: Vec<&ArrayD<Fr>> = models.iter().collect();
+
+    let outputs = graph.run(&inputs_ref, &model_refs);
+
+    // Node 0: LinearForwardBlock  x[4] * w1[4,4] → [4]
+    assert_eq!(outputs[0].len(), 1, "LinearForward should produce 1 output");
+    assert_eq!(outputs[0][0].shape(), &[4], "LinearForward output must be [4], not [1]");
+
+    // Node 1: IdBasicBlock (ReLU stand-in in forward) → [4]
+    assert_eq!(outputs[1][0].shape(), &[4], "Id/ReLU forward output must be [4]");
+
+    // Node 2: LinearForwardBlock  a1[4] * w2[4,4] → [4]
+    assert_eq!(outputs[2][0].shape(), &[4], "Second LinearForward output must be [4]");
+
+    // Node 3: IdBasicBlock → [4]
+    assert_eq!(outputs[3][0].shape(), &[4], "Second Id output must be [4]");
+
+    // Node 4: ReLUBackwardBlock → [4]
+    assert_eq!(outputs[4][0].shape(), &[4], "ReLU backward output must be [4]");
+
+    // Node 5: LinearBackwardBlock → grad_x [4], grad_w [4,4]
+    assert_eq!(outputs[5].len(), 2, "LinearBackward should produce 2 outputs");
+    assert_eq!(outputs[5][0].shape(), &[4], "LinearBackward grad_x must be [4]");
+    assert_eq!(outputs[5][1].shape(), &[4, 4], "LinearBackward grad_w must be [4,4]");
+
+    // Node 6: ReLUBackwardBlock → [4]
+    assert_eq!(outputs[6][0].shape(), &[4], "Second ReLU backward output must be [4]");
+
+    // Node 7: LinearBackwardBlock → grad_x [4], grad_w [4,4]
+    assert_eq!(outputs[7][0].shape(), &[4], "Second LinearBackward grad_x must be [4]");
+    assert_eq!(outputs[7][1].shape(), &[4, 4], "Second LinearBackward grad_w must be [4,4]");
+
+    // Node 8: SGDUpdateBlock w1 → [4,4]
+    assert_eq!(outputs[8][0].shape(), &[4, 4], "SGD update for w1 must be [4,4]");
+
+    // Node 9: SGDUpdateBlock w2 → [4,4]
+    assert_eq!(outputs[9][0].shape(), &[4, 4], "SGD update for w2 must be [4,4]");
+
+    // Node 10-11: AddBasicBlock (flattened sums for challenge)
+    // Node 12: ChallengeBlock → [1]
+    assert_eq!(outputs[12][0].shape(), &[1], "ChallengeBlock output must be [1]");
+
+    // Node 13: EqBasicBlock (no run output, just verification)
+    println!("All 4×4 tensor shape assertions passed!");
+  }
 }

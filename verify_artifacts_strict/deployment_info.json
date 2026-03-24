@@ -1,0 +1,6 @@
+{
+  "contract_address": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+  "deploy_tx_hash": "0x04ece248d28c87b34b2e78853a33a0762b2811f409f6e7c7a24356b77e27452a",
+  "merkle_root": "0x01bf57c3333fedd35cef7ca4c15ba092e8b0b8e8ea5fa8e8cfb19987c5a0e7ab",
+  "is_committed": true
+}

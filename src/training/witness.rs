@@ -34,4 +34,13 @@ pub struct SampleWitnessV1 {
   pub grad_b1: Vec<i64>,
   pub grad_w2: Vec<Vec<i64>>,
   pub grad_b2: Vec<i64>,
+  // Data Binding fields (injected by scripts/inject_root.py)
+  #[serde(default)]
+  pub merkle_root: Option<String>,
+  #[serde(default)]
+  pub raw_data: Option<Vec<i64>>,
+  #[serde(default)]
+  pub merkle_path: Option<Vec<String>>,
+  #[serde(default)]
+  pub raw_data_length: Option<usize>,
 }

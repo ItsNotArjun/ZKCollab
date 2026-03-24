@@ -4,6 +4,7 @@ pub mod witness;
 pub mod proof;
 pub mod constraints;
 pub mod compile;
+pub mod data_binding;
 
 use crate::basic_block::{Data, DataEnc, SRS};
 use crate::graph::Graph;
@@ -18,6 +19,7 @@ use crate::training::constraints::{
 	FIXED_SCALE,
 };
 use ark_bn254::{Fr, G1Affine, G1Projective, G2Affine, G2Projective};
+use ark_ff::PrimeField;
 use ark_poly::univariate::DensePolynomial;
 use ark_serialize::{CanonicalSerialize, SerializationError};
 use ndarray::{ArrayD, Ix1, Ix2, IxDyn};
@@ -333,7 +335,12 @@ fn enforce_vjp_block(
 }
 
 fn enforce_optimizer_update(update: &SGDUpdateIR) -> Result<(), String> {
-	enforce_sgd_update(&update.w_t, &update.grad, update.lr, &update.w_next)
+	let lr_i64 = {
+		let b = update.lr.into_bigint();
+		if b.0[1] == 0 && b.0[2] == 0 && b.0[3] == 0 { b.0[0] as i64 }
+		else { let n = (-update.lr).into_bigint(); -(n.0[0] as i64) }
+	};
+	enforce_sgd_update(&update.w_t, &update.grad, lr_i64, &update.w_next)
 }
 
 pub fn build_training_transcript(step: &TrainingStepIR) -> Result<Vec<u8>, SerializationError> {
