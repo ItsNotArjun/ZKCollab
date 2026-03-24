@@ -8,3 +8,5 @@
 # Node / JS dependencies
 node_modules/
 
+__pycache__/
+*.pyc
