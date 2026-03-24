@@ -1,3 +1,4 @@
+import argparse
 import json
 from pathlib import Path
 
@@ -9,9 +10,12 @@ from sample_model import SampleModel
 
 """Generate a single-step training witness for the SampleModel architecture.
 
-This script runs one SGD step on a 2-layer 4x4 MLP (SampleModel)
+This script runs one SGD step on a configurable 2-layer MLP (SampleModel)
 and dumps all the tensors needed by the Rust prover into a JSON
-file `step_witness_v1.json`.
+file `step_witness_v2.json`.
+
+Dimensions are controlled via --input-dim and --hidden-dim (both default to 4
+to preserve backward compatibility with the original 4×4 architecture).
 
 Rust is responsible for turning this witness into a zk-proof; the
 Python side is purely for producing the training transcript.
@@ -32,12 +36,32 @@ def to_int_vector(t: torch.Tensor):
 
 
 def main() -> None:
-    model = SampleModel()
+    parser = argparse.ArgumentParser(
+        description="Generate a single-step SGD training witness for SampleModel."
+    )
+    parser.add_argument(
+        "--input-dim",
+        type=int,
+        default=4,
+        help="Input dimension of the MLP (default: 4)",
+    )
+    parser.add_argument(
+        "--hidden-dim",
+        type=int,
+        default=4,
+        help="Hidden (and output) dimension of the MLP (default: 4)",
+    )
+    args = parser.parse_args()
+
+    input_dim: int = args.input_dim
+    hidden_dim: int = args.hidden_dim
+
+    model = SampleModel(input_dim=input_dim, hidden_dim=hidden_dim)
     model.train()
 
-    # Single input/target for a 4D regression task
-    x = torch.randn(1, 4, requires_grad=True)
-    y_target = torch.randn(1, 4)
+    # Single input/target for an n-dimensional regression task
+    x = torch.randn(1, input_dim, requires_grad=True)
+    y_target = torch.randn(1, hidden_dim)
 
     # Capture parameters before the step
     w1_before = model.lin1.weight.detach().clone()
@@ -116,9 +140,9 @@ def main() -> None:
         "grad_b2": to_int_vector(grad_b2),
     }
 
-    out = Path("step_witness_v1.json")
+    out = Path("step_witness_v2.json")
     out.write_text(json.dumps(witness, indent=2))
-    print(f"Wrote SampleModel witness to {out}")
+    print(f"Wrote SampleModel witness ({input_dim}×{hidden_dim}) to {out}")
 
 
 if __name__ == "__main__":  # pragma: no cover

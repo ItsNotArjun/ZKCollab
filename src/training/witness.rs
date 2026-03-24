@@ -1,8 +1,11 @@
 use serde::Deserialize;
 
-/// Witness format for a single SGD step of the 2-layer 4x4 SampleModel.
+/// Witness format for a single SGD step of the 2-layer SampleModel.
 ///
-/// This matches the JSON produced by generate_witness.py.
+/// The vector and matrix fields use `Vec` types so they can hold tensors of
+/// any size, supporting arbitrary n×n architectures (e.g. 4×4, 8×8, 16×16).
+/// This matches the JSON produced by generate_witness.py for any
+/// `--input-dim` / `--hidden-dim` combination.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SampleWitnessV1 {
   pub fixed_scale_k: u32,

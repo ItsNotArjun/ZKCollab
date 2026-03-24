@@ -54,7 +54,7 @@ def main():
                         help="Merkle root hex string (0x-prefixed)")
     parser.add_argument("--root-file", type=str, default=None,
                         help="File containing the Merkle root hex string")
-    parser.add_argument("--witness", type=str, default="step_witness_v1.json",
+    parser.add_argument("--witness", type=str, default="step_witness_v2.json",
                         help="Input witness JSON path")
     parser.add_argument("--output", type=str, default="step_witness_v2.json",
                         help="Output augmented witness JSON path")
