@@ -33,11 +33,6 @@ fn push_node_flags(pre: &mut Precomputable) {
   pre.encodeOutputs.push(false);
 }
 
-fn push_node_flags_precomputable(pre: &mut Precomputable) {
-  pre.prove_and_verify.push(true);
-  pre.encodeOutputs.push(false);
-}
-
 fn add_sum_chain(graph: &mut Graph, values: &[(i32, usize)], add_bb: usize) -> i32 {
   assert!(!values.is_empty());
   if values.len() == 1 {
@@ -137,7 +132,7 @@ pub fn build_training_graph(spec: &TrainingSpec) -> (Graph, Vec<ArrayD<Fr>>, usi
   let mut w_next_nodes: Vec<i32> = vec![];
   for (w_input, grad_node) in weight_inputs.iter().zip(grad_w_nodes.iter()) {
     let node = graph.addNode(sgd, vec![(*w_input, 0), (grad_node.0, grad_node.1), (-3, 0)]);
-    push_node_flags_precomputable(&mut graph.precomputable);
+    push_node_flags(&mut graph.precomputable);
     w_next_nodes.push(node);
   }
 
