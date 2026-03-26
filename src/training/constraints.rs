@@ -39,11 +39,34 @@ fn fr_to_i64(x: Fr) -> i64 {
   }
 }
 
-/// Maximum allowed difference (in Q16 units) between recomputed and
-/// witness gradient elements. The witness is produced via float
-/// PyTorch then quantised, so ±2-3 LSB rounding error is expected
-/// due to intermediate precision loss.
-const GRAD_TOLERANCE: i64 = 3;
+/// Round a Q32 product back to Q16 using banker's rounding (round-half-to-even).
+///
+/// This divides `prod` by `FIXED_SCALE` with deterministic tie-breaking:
+/// when the remainder is exactly half the scale, the result is rounded to
+/// the nearest even integer.  Both the Python witness generator and this
+/// Rust verifier use the identical algorithm, so the comparison can be
+/// exact (no tolerance required).
+pub(crate) fn round_fixed_point(prod: i64) -> i64 {
+  let scale = FIXED_SCALE as i64;
+  let quotient = prod / scale; // truncation toward zero (Rust semantics)
+  let remainder = prod - quotient * scale; // same sign as prod
+  let abs_rem = remainder.abs();
+  let half = scale / 2; // 32768 for FIXED_SCALE = 2^16
+  if abs_rem < half {
+    quotient
+  } else if abs_rem > half {
+    if remainder > 0 { quotient + 1 } else { quotient - 1 }
+  } else {
+    // Tie: round to nearest even
+    if quotient % 2 == 0 {
+      quotient
+    } else if remainder > 0 {
+      quotient + 1
+    } else {
+      quotient - 1
+    }
+  }
+}
 
 pub fn enforce_linear_vjp(
   x: &ArrayD<Fr>,
@@ -64,11 +87,9 @@ pub fn enforce_linear_vjp(
     return Err("linear VJP dimension mismatch".to_string());
   }
 
-  let scale = FIXED_SCALE as i64;
-
-  // grad_x = W^T @ upstream, rescaled from Q32 to Q16.
-  // Uses integer truncation (toward zero) to match PyTorch's
-  // float-then-round quantisation within ±GRAD_TOLERANCE.
+  // grad_x = W^T @ upstream, rescaled from Q32 to Q16 using banker's rounding.
+  // The witness must use the identical round_fixed_point algorithm so this
+  // check is an exact equality (no tolerance).
   if !same_shape(&ArrayD::zeros(IxDyn(x1.shape())), grad_x) {
     return Err("linear VJP grad_x shape mismatch".to_string());
   }
@@ -78,9 +99,9 @@ pub fn enforce_linear_vjp(
     for i in 0..m {
       acc += fr_to_i64(w2[(i, j)]) * fr_to_i64(up[i]);
     }
-    let expected = acc / scale; // integer truncation toward zero
+    let expected = round_fixed_point(acc);
     let actual = fr_to_i64(gx1[j]);
-    if (expected - actual).abs() > GRAD_TOLERANCE {
+    if expected != actual {
       return Err(format!(
         "linear VJP grad_x incorrect at index {}: expected {} got {}",
         j, expected, actual
@@ -88,7 +109,7 @@ pub fn enforce_linear_vjp(
     }
   }
 
-  // grad_w = upstream ⊗ x, rescaled from Q32 to Q16.
+  // grad_w = upstream ⊗ x, rescaled from Q32 to Q16 using banker's rounding.
   if !same_shape(&ArrayD::zeros(IxDyn(w2.shape())), grad_w) {
     return Err("linear VJP grad_w shape mismatch".to_string());
   }
@@ -96,9 +117,9 @@ pub fn enforce_linear_vjp(
   for i in 0..m {
     for j in 0..n {
       let prod = fr_to_i64(up[i]) * fr_to_i64(x1[j]);
-      let expected = prod / scale;
+      let expected = round_fixed_point(prod);
       let actual = fr_to_i64(gw2[(i, j)]);
-      if (expected - actual).abs() > GRAD_TOLERANCE {
+      if expected != actual {
         return Err(format!(
           "linear VJP grad_w incorrect at [{},{}]: expected {} got {}",
           i, j, expected, actual
@@ -128,17 +149,16 @@ pub fn enforce_sgd_update(w_t: &ArrayD<Fr>, grad: &ArrayD<Fr>, lr_scaled: i64, w
   if w_t.shape() != grad.shape() || w_t.shape() != w_next.shape() {
     return Err("SGD shape mismatch".to_string());
   }
-  let scale = FIXED_SCALE as i64;
   for ((&wt, &g), &wn) in w_t.iter().zip(grad.iter()).zip(w_next.iter()) {
     let wt_i = fr_to_i64(wt);
     let g_i = fr_to_i64(g);
     let wn_i = fr_to_i64(wn);
-    let update = lr_scaled * g_i / scale;
+    let update = round_fixed_point(lr_scaled * g_i);
     let expected = wt_i - update;
-    if (expected - wn_i).abs() > GRAD_TOLERANCE {
+    if expected != wn_i {
       return Err(format!(
-        "SGD update constraint violated: expected {} got {} (diff {})",
-        expected, wn_i, expected - wn_i
+        "SGD update constraint violated: expected {} got {}",
+        expected, wn_i
       ));
     }
   }
@@ -171,7 +191,7 @@ mod tests {
     let w = arr2(&[[Fr::from(2 * s)]]).into_dyn();
     let upstream = arr1(&[Fr::from(5 * s)]).into_dyn();
     let grad_x = arr1(&[Fr::from(10 * s)]).into_dyn();
-    // Wrong by more than tolerance: should be 15*s, here 16*s (diff = s >> 3)
+    // Wrong by one Q16 unit (s): should be 15*s, here 16*s
     let grad_w = arr2(&[[Fr::from(16 * s)]]).into_dyn();
     assert!(enforce_linear_vjp(&x, &w, &upstream, &grad_x, &grad_w).is_err());
   }
@@ -220,5 +240,34 @@ mod tests {
     let c = derive_challenge(transcript);
     assert!(enforce_randomness_binding(c, transcript).is_ok());
     assert!(enforce_randomness_binding(c, b"different").is_err());
+  }
+
+  #[test]
+  fn test_round_fixed_point_basic() {
+    let s = FIXED_SCALE as i64;
+    // Exact multiples: no rounding needed
+    assert_eq!(round_fixed_point(2 * s * s), 2 * s);
+    assert_eq!(round_fixed_point(-3 * s * s), -3 * s);
+    // Below half: round toward zero
+    assert_eq!(round_fixed_point(s + s / 2 - 1), 1);
+    assert_eq!(round_fixed_point(-(s + s / 2 - 1)), -1);
+    // Above half: round away from zero
+    assert_eq!(round_fixed_point(s + s / 2 + 1), 2);
+    assert_eq!(round_fixed_point(-(s + s / 2 + 1)), -2);
+  }
+
+  #[test]
+  fn test_round_fixed_point_ties_to_even() {
+    let s = FIXED_SCALE as i64;
+    // Tie at 0.5: quotient=0 (even) → stay at 0
+    assert_eq!(round_fixed_point(s / 2), 0);
+    // Tie at 1.5: quotient=1 (odd) → round up to 2
+    assert_eq!(round_fixed_point(s + s / 2), 2);
+    // Tie at 2.5: quotient=2 (even) → stay at 2
+    assert_eq!(round_fixed_point(2 * s + s / 2), 2);
+    // Tie at -0.5: quotient=0 (even) → stay at 0
+    assert_eq!(round_fixed_point(-(s / 2)), 0);
+    // Tie at -1.5: quotient=-1 (odd) → round to -2
+    assert_eq!(round_fixed_point(-(s + s / 2)), -2);
   }
 }
