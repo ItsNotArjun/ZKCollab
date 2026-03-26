@@ -16,6 +16,7 @@ use crate::training::constraints::{
 	enforce_randomness_binding,
 	enforce_relu_vjp,
 	enforce_sgd_update,
+	round_fixed_point,
 	FIXED_SCALE,
 };
 use ark_bn254::{Fr, G1Affine, G1Projective, G2Affine, G2Projective};
@@ -393,10 +394,30 @@ fn commit_state(
 }
 
 fn apply_sgd(w_t: &ArrayD<Fr>, grad: &ArrayD<Fr>, lr: Fr) -> ArrayD<Fr> {
-	let scale = Fr::from(FIXED_SCALE);
+	let lr_i64 = {
+		let b = lr.into_bigint();
+		if b.0[1] == 0 && b.0[2] == 0 && b.0[3] == 0 {
+			b.0[0] as i64
+		} else {
+			let neg = (-lr).into_bigint();
+			-(neg.0[0] as i64)
+		}
+	};
 	let mut next = w_t.clone();
 	for ((next_cell, wt), g) in next.iter_mut().zip(w_t.iter()).zip(grad.iter()) {
-		*next_cell = *wt - lr * *g / scale;
+		let wt_i = {
+			let b = wt.into_bigint();
+			if b.0[1] == 0 && b.0[2] == 0 && b.0[3] == 0 { b.0[0] as i64 }
+			else { let n = (-*wt).into_bigint(); -(n.0[0] as i64) }
+		};
+		let g_i = {
+			let b = g.into_bigint();
+			if b.0[1] == 0 && b.0[2] == 0 && b.0[3] == 0 { b.0[0] as i64 }
+			else { let n = (-*g).into_bigint(); -(n.0[0] as i64) }
+		};
+		let update = round_fixed_point(lr_i64 * g_i);
+		let result = wt_i - update;
+		*next_cell = if result >= 0 { Fr::from(result as u64) } else { -Fr::from((-result) as u64) };
 	}
 	next
 }
@@ -509,8 +530,15 @@ mod training_ir_tests {
 		let activation = arr1(&[Fr::from(w_val) * Fr::from(input_val)]).into_dyn();
 		let saved_commitment = commit_tensor(&input).unwrap();
 		let upstream = arr1(&[Fr::from(upstream_val)]).into_dyn();
-		let grad_x = arr1(&[Fr::from(w_val) * Fr::from(upstream_val)]).into_dyn();
-		let grad_w = arr2(&[[Fr::from(input_val) * Fr::from(upstream_val)]]).into_dyn();
+		// grad_x and grad_w must be computed with the same banker's rounding
+		// used by enforce_linear_vjp so the constraint check is exact.
+		let gx_i64 = round_fixed_point(w_val as i64 * upstream_val as i64);
+		let gw_i64 = round_fixed_point(input_val as i64 * upstream_val as i64);
+		let i64_to_fr = |v: i64| -> Fr {
+			if v >= 0 { Fr::from(v as u64) } else { -Fr::from((-v) as u64) }
+		};
+		let grad_x = arr1(&[i64_to_fr(gx_i64)]).into_dyn();
+		let grad_w = arr2(&[[i64_to_fr(gw_i64)]]).into_dyn();
 		let saved_for_backward = input.clone();
 		let update = SGDUpdateIR {
 			w_t: weights.clone(),
@@ -549,7 +577,10 @@ mod training_ir_tests {
 
 	#[test]
 	fn training_step_succeeds() {
-		let step = build_linear_relu_step(1, 1, 1, FIXED_SCALE);
+		// Use Q16-scaled values (FIXED_SCALE = 2^16 encodes real value 1.0) so that
+		// grad_x, grad_w, and the SGD update rescale exactly with round_fixed_point.
+		let s = FIXED_SCALE;
+		let step = build_linear_relu_step(s, s, s, s);
 		let result = prove_training_step_ir(&step).unwrap();
 		assert_eq!(result.params_before, step.optimizer.updates[0].w_t);
 		assert_eq!(result.params_after, step.optimizer.updates[0].w_next);
@@ -557,7 +588,8 @@ mod training_ir_tests {
 
 	#[test]
 	fn training_step_fails_on_bad_gradients() {
-		let mut step = build_linear_relu_step(1, 1, 1, FIXED_SCALE);
+		let s = FIXED_SCALE;
+		let mut step = build_linear_relu_step(s, s, s, s);
 		if let VJPKindIR::Linear { ref mut grad_w, .. } = step.backward.vjp_blocks[0].kind {
 			grad_w[[0, 0]] = Fr::from(2u64);
 		}
@@ -568,7 +600,8 @@ mod training_ir_tests {
 
 	#[test]
 	fn training_step_fails_on_bad_optimizer_math() {
-		let mut step = build_linear_relu_step(1, 1, 1, FIXED_SCALE);
+		let s = FIXED_SCALE;
+		let mut step = build_linear_relu_step(s, s, s, s);
 		step.optimizer.updates[0].w_next = step.optimizer.updates[0].w_t.clone();
 		let transcript = build_training_transcript(&step).unwrap();
 		step.randomness_challenge = derive_challenge(&transcript);
@@ -577,9 +610,9 @@ mod training_ir_tests {
 
 	#[test]
 	fn training_step_rejects_randomness_replay() {
-		let mut step = build_linear_relu_step(1, 1, 1, FIXED_SCALE);
+		let s = FIXED_SCALE;
+		let mut step = build_linear_relu_step(s, s, s, s);
 		step.randomness_challenge = Fr::from(123u64);
 		assert!(prove_training_step_ir(&step).is_err());
 	}
 }
-
