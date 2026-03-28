@@ -26,8 +26,36 @@ FIXED_SCALE_K = 16
 FIXED_SCALE = 1 << FIXED_SCALE_K
 
 
+def round_banker(prod: int, scale: int) -> int:
+    """Round-half-to-even (banker's rounding) for integer division prod/scale.
+
+    Matches Rust's round_fixed_point exactly: uses truncation toward zero
+    for the base quotient, then applies tie-breaking to the nearest even
+    integer when the remainder is exactly half the scale.
+    """
+    # int() truncates toward zero, matching Rust's / operator on i64
+    quotient = int(prod / scale)
+    remainder = prod - quotient * scale  # same sign as prod
+    abs_rem = abs(remainder)
+    half = scale // 2
+    if abs_rem < half:
+        return quotient
+    elif abs_rem > half:
+        return quotient + 1 if remainder > 0 else quotient - 1
+    else:
+        # Tie: round to nearest even
+        if quotient % 2 == 0:
+            return quotient
+        return quotient + 1 if remainder > 0 else quotient - 1
+
+
 def quantize(v: float) -> int:
-    """Quantize a float to Q16 fixed-point."""
+    """Quantize a float to Q16 fixed-point.
+
+    Uses Python's built-in round(), which also implements banker's rounding
+    (round-half-to-even) for float values.  This is the correct rounding to
+    use when converting floating-point model parameters to Q16 integers.
+    """
     return int(round(v * FIXED_SCALE))
 
 
@@ -96,6 +124,58 @@ def compute_poseidon_root(raw_data: list) -> str:
                 return f.read().strip()
         except:
             return "0x0000000000000000000000000000000000000000000000000000000000000000"
+
+
+def relu_backward_q(z_q: list, upstream_q: list) -> list:
+    """Compute ReLU backward pass from quantized integer inputs.
+
+    ReLU backward is exact (no rescaling): pass upstream through when z > 0.
+    Matches Rust's enforce_relu_vjp exactly.
+    """
+    return [u if z > 0 else 0 for z, u in zip(z_q, upstream_q)]
+
+
+def linear_backward_grad_x_q(w_q: list, upstream_q: list) -> list:
+    """Compute grad_x = W^T @ upstream, rescaled Q32→Q16 using banker's rounding.
+
+    Matches Rust's enforce_linear_vjp grad_x loop exactly.
+    w_q is a list-of-lists (m×n), upstream_q is length-m.
+    Returns length-n grad_x.
+    """
+    m = len(w_q)
+    n = len(w_q[0])
+    grad_x = []
+    for j in range(n):
+        acc = sum(w_q[i][j] * upstream_q[i] for i in range(m))
+        grad_x.append(round_banker(acc, FIXED_SCALE))
+    return grad_x
+
+
+def linear_backward_grad_w_q(upstream_q: list, x_q: list) -> list:
+    """Compute grad_w = upstream ⊗ x, rescaled Q32→Q16 using banker's rounding.
+
+    Matches Rust's enforce_linear_vjp grad_w loop exactly.
+    Returns a list-of-lists (m×n).
+    """
+    return [
+        [round_banker(upstream_q[i] * x_q[j], FIXED_SCALE) for j in range(len(x_q))]
+        for i in range(len(upstream_q))
+    ]
+
+
+def sgd_update_q(w_q: list, grad_q: list, lr_scaled: int) -> list:
+    """Apply SGD update using banker's rounding, matching Rust's enforce_sgd_update.
+
+    w_next[i] = w[i] - round_banker(lr_scaled * grad[i], FIXED_SCALE)
+    Works for both vectors and lists-of-lists (matrices).
+    """
+    if w_q and isinstance(w_q[0], list):
+        return [
+            [w_q[i][j] - round_banker(lr_scaled * grad_q[i][j], FIXED_SCALE)
+             for j in range(len(w_q[i]))]
+            for i in range(len(w_q))
+        ]
+    return [w - round_banker(lr_scaled * g, FIXED_SCALE) for w, g in zip(w_q, grad_q)]
 
 
 def parse_args() -> argparse.Namespace:
@@ -175,38 +255,79 @@ def main() -> None:
 
     lr_scaled = quantize(lr)
 
+    # Quantize all primary (unconstrained) values from float.
+    q_x         = to_int_vector(x)
+    q_y_target  = to_int_vector(y_target)
+    q_w1_before = to_int_matrix(w1_before)
+    q_b1_before = to_int_vector(b1_before)
+    q_w2_before = to_int_matrix(w2_before)
+    q_b2_before = to_int_vector(b2_before)
+    q_z1        = to_int_vector(z1)
+    q_a1        = to_int_vector(a1)
+    q_z2        = to_int_vector(z2)
+    q_y_pred    = to_int_vector(y_pred)
+    q_grad_y    = to_int_vector(grad_y)
+    # Bias gradients are not constrained by VJP, so quantize from float.
+    q_grad_b1   = to_int_vector(grad_b1)
+    q_grad_b2   = to_int_vector(grad_b2)
+
+    # Recompute all constrained values from quantized integers using
+    # round_banker so they match Rust's round_fixed_point exactly.
+    # This eliminates any off-by-1 discrepancy caused by float→int quantization.
+
+    # Backward pass, layer 2 (final ReLU: z2 → y_pred)
+    q_grad_z2 = relu_backward_q(q_z2, q_grad_y)
+
+    # Backward pass, linear layer 2 (a1 → z2)
+    q_grad_a1  = linear_backward_grad_x_q(q_w2_before, q_grad_z2)
+    q_grad_w2  = linear_backward_grad_w_q(q_grad_z2, q_a1)
+
+    # Backward pass, first ReLU (z1 → a1)
+    q_grad_z1 = relu_backward_q(q_z1, q_grad_a1)
+
+    # Backward pass, linear layer 1 (x → z1)
+    q_grad_x  = linear_backward_grad_x_q(q_w1_before, q_grad_z1)
+    q_grad_w1 = linear_backward_grad_w_q(q_grad_z1, q_x)
+
+    # SGD updates — computed from the same quantized grad values so that
+    # enforce_sgd_update passes with exact equality.
+    q_w1_after = sgd_update_q(q_w1_before, q_grad_w1, lr_scaled)
+    q_b1_after = sgd_update_q(q_b1_before, q_grad_b1, lr_scaled)
+    q_w2_after = sgd_update_q(q_w2_before, q_grad_w2, lr_scaled)
+    q_b2_after = sgd_update_q(q_b2_before, q_grad_b2, lr_scaled)
+
     witness = {
         "fixed_scale_k": FIXED_SCALE_K,
         "input_dim": args.input_dim,
         "hidden_dim": args.hidden_dim,
-        "x": to_int_vector(x),
-        "y_target": to_int_vector(y_target),
+        "x": q_x,
+        "y_target": q_y_target,
         "lr_scaled": lr_scaled,
         # Parameters before/after
-        "w1_before": to_int_matrix(w1_before),
-        "b1_before": to_int_vector(b1_before),
-        "w2_before": to_int_matrix(w2_before),
-        "b2_before": to_int_vector(b2_before),
-        "w1_after": to_int_matrix(w1_after),
-        "b1_after": to_int_vector(b1_after),
-        "w2_after": to_int_matrix(w2_after),
-        "b2_after": to_int_vector(b2_after),
+        "w1_before": q_w1_before,
+        "b1_before": q_b1_before,
+        "w2_before": q_w2_before,
+        "b2_before": q_b2_before,
+        "w1_after": q_w1_after,
+        "b1_after": q_b1_after,
+        "w2_after": q_w2_after,
+        "b2_after": q_b2_after,
         # Forward activations
-        "z1": to_int_vector(z1),
-        "a1": to_int_vector(a1),
-        "z2": to_int_vector(z2),
-        "y_pred": to_int_vector(y_pred),
-        # Gradients wrt activations and input
-        "grad_y": to_int_vector(grad_y),
-        "grad_z2": to_int_vector(grad_z2),
-        "grad_a1": to_int_vector(grad_a1),
-        "grad_z1": to_int_vector(grad_z1),
-        "grad_x": to_int_vector(grad_x),
-        # Parameter gradients
-        "grad_w1": to_int_matrix(grad_w1),
-        "grad_b1": to_int_vector(grad_b1),
-        "grad_w2": to_int_matrix(grad_w2),
-        "grad_b2": to_int_vector(grad_b2),
+        "z1": q_z1,
+        "a1": q_a1,
+        "z2": q_z2,
+        "y_pred": q_y_pred,
+        # Gradients wrt activations and input (recomputed from quantized integers)
+        "grad_y": q_grad_y,
+        "grad_z2": q_grad_z2,
+        "grad_a1": q_grad_a1,
+        "grad_z1": q_grad_z1,
+        "grad_x": q_grad_x,
+        # Parameter gradients (recomputed from quantized integers)
+        "grad_w1": q_grad_w1,
+        "grad_b1": q_grad_b1,
+        "grad_w2": q_grad_w2,
+        "grad_b2": q_grad_b2,
     }
 
     # Flatten and compute Merkle root using Poseidon
